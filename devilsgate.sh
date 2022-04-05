@@ -8,114 +8,15 @@
 # on the Raspbery PIs network interface 'ETH0' through the Tor network by
 # another network interface connected to the internet.
 #
-#
-# CONCEPT
-# =======
-#
-# The idea of configuring a Raspberry PI as a gatekeeper is to forward all
-# network data coming from one or multiple clients connected to ETH0
-# on the Raspberry PI through the Tor network. This prevents any
-# accidental leakage and guarantees that any client connected to the
-# Raspberry PI via the ETH0 network interface goes through the Tor network.
-#
-#
-# SETUP
-# =====
-#
-# The following diagram describes the ideal setup with a gatekeeper:
-#
-#    __________                     __________
-#    |        |                     |        |           connection to internet     __________
-#    |        |                     |        |[      ]-----------------------------(          )
-#    | user   |[      ]     [      ]| gate   |[ usb0 ]   tor network pipe          ( internet )
-#    | system |[ eth0 ]=====[ eth0 ]| keeper |[  or  ]=============================( provider )
-#    |        |[      ]     [      ]|        |[ eth1 ]-----------------------------(__________)
-#    |        |                     |        |
-#    ----------                     ----------
-#
-# The secondary network interface controller in the gatekeeper could be
-# either a USB-to-ETHERNET adapter or USB tethering using a cellphone which
-# would be connected to the internet.
-#
-#
-# FEATURES
-# ========
-#
-# devilsgate provides several command line options and arguments to help
-# manage a gatekeeper.
-#
-#
-# CONFIGURE GATEKEEPER
-# --------------------
-#
-# A Raspberry PI can be configured as a gatekeeper by using the '-c' option.
-# By default, the Tor exit country is set to 'US'. However, you can
-# specify a country code after the '-c' option. See the example below:
-#
-#     # Configure a gatekeeper to exit out of Canada
-#     ./devilsgate.sh -c ca
-#
-#
-# QUERY COUNTRY INFO
-# ------------------
-#
-# Remembering two letter country codes is hard. So devilsgate makes it
-# easier on you by providing a way to query for any country given a
-# keyword. It will print out any country that contains that keyword
-# and hopefully the result will contain the desired output.
-# 
-# For example, I need the two letter country code for Bulgaria and I
-# don't know how to spell Bulgaria but I know it starts with 'bul'.
-# You can use devilsgate and search for 'bul' as such:
-#
-#     ./devilsgate.sh -q bul
-#     [+] Searching for the following keyword(s): bul
-#         [BG] Bulgaria
-#     [+] Search complete!
-#     [!] Not all countries contain Tor exit relays!
-#
-# As you can see the result above, devilsgate found a match that contained
-# the keyword 'bul'. However, notice the warning message indicating that
-# not all countries contain Tor exit relays. To find out if a country
-# contains Tor exit relays, use torseeker to perform a query on the desired
-# country.
-#
-# 
-# SET TOR EXIT COUNTRY
-# --------------------
-#
-# devilsgate can be used to change the Tor exit country with the '-s' flag
-# followed by the desired country code, as such:
-#
-#    # Change the Tor exit country to Brazil
-#    ./devilsgate.sh -s br
-#
-#
-# RESTART TOR SERVICE
-# -------------------
-#
-# devilsgate allows you to restart the Tor service if necessary.
-#
-#    ./devilsgate.sh -r
-#
-#
-# TEST CONNECTION
-# ---------------
-#
-# devilsgate provides a way to test if you have an active connection
-# to the Tor network. It is highly suggested that after changing the
-# Tor exit country to verify that there is still an active connection.
-# Not all countries contain active Tor exit relays, so it is possible
-# that you may lose connection to the Tor network.
-#
-#    ./devilsgate.sh -t
+# See the README.md file for more information and updates at
+# https://github.com/rwprimitives/devilsgate
 #
 
 
 # Program information
 PACKAGE="devilsgate"
 FILENAME="devilsgate.sh"
-VERSION="1.0.0"
+VERSION="1.0.1"
 AUTHOR="eldiablo"
 LICENSE="BSD-3-Clause"
 COPYRIGHT="Copyright (c) 2022 rwprimitives"
@@ -129,8 +30,7 @@ ACTION_RESET_DEVICE=4
 
 
 #
-# The following set of global variables contain non-configuration
-# values:
+# The following global variables contain non-configuration values:
 #
 DNSMASQ_CONFIG_FILE="/etc/dnsmasq.conf"
 DHCP_CONFIG_FILE="/etc/dhcpcd.conf"
@@ -151,8 +51,9 @@ REQUIRED_TEST_TOOLS="torsocks, curl"
 
 
 #
-# The following set of global variables contain values that
-# can be configured within the script before running devilsgate.
+# The following global variables contain values that can be
+# configured within the script before running devilsgate:
+#
 # @TODO: Add a feature to consume a configuration file
 #
 DNS_SERVER="1.1.1.1"
@@ -561,9 +462,18 @@ configure_ip_forwarding()
 
 get_internet_nic()
 {
+    local default_route=""
     local nic=""
+    local ret=""
 
-    nic=$(ip route list default | cut -f 5 -d ' ')
+    default_route=$(ip route list default)
+
+    if [ -n "$default_route" ]; then
+        ret=$(printf "%s" "$default_route" | grep -i "default via" &> /dev/null; echo $?)
+        if [ "$ret" == "0" ]; then
+            nic=$(ip route list default | cut -f 5 -d ' ')
+        fi
+    fi
 
     printf "%s" "$nic"
 }
@@ -621,7 +531,13 @@ check_internet_connection()
     local status=0
     local ret=""
 
-    ret=$(echo -e "GET http://google.com HTTP/1.0\n\n" | nc google.com 80 > /dev/null 2>&1; echo $?)
+    #
+    # NOTE:
+    # It seems that Raspberry PI OS 64-bit doesn't contain the nc command line tool, so wget will do
+    # for now. Leaving the previous line for historical purpose.
+    # ret=$(echo -e "GET http://google.com HTTP/1.0\n\n" | nc google.com 80 > /dev/null 2>&1; echo $?)
+    #
+    ret=$(wget -q --delete-after http://google.com; echo $?)
     if [ "$ret" == "0" ]; then
         status=1
     fi
@@ -848,7 +764,7 @@ configure_gatekeeper()
 
     # Perform a system upgrade and look for errors in the apt-get output
     LOGI "Upgrading system to the latest version. This could take a while..."
-    ret=$(apt-get upgrade 2>&1 | grep -i -E "error|could not|problem"; echo $?)
+    ret=$(apt-get upgrade -y 2>&1 | grep -i -E "error|could not|problem"; echo $?)
     if [ "$ret" == "0" ]; then
         LOGE "An error occurred when attempting to upgrade system"
         exit 1
